@@ -1,0 +1,48 @@
+diff --git c/generate_samples.py w/generate_samples.py
+index 1978c89..b76e46f 100755
+--- c/generate_samples.py
++++ w/generate_samples.py
+@@ -39,6 +39,7 @@ def generate_samples(
+     auto_reduce_batch_size: bool = False,
+     min_phoneme_count: Optional[int] = None,
+     phoneme_input: bool = False,
++    min_speaker: int = 0,
+     **kwargs,
+ ) -> None:
+     """
+@@ -75,7 +76,7 @@ def generate_samples(
+     _LOGGER.debug("Loading %s", model)
+     model_path = Path(model)
+ 
+-    torch_model = torch.load(model_path)
++    torch_model = torch.load(model_path, weights_only=False)
+     torch_model.eval()
+     _LOGGER.info("Successfully loaded the model")
+ 
+@@ -125,7 +126,12 @@ def generate_samples(
+         beta=14.769656459379492,
+     )
+ 
+-    speakers_iter = it.cycle(it.product(range(num_speakers), range(num_speakers)))
++    # Patched for microWakeWord: allow a disjoint speaker range so that the
++    # held-out validation/test samples come from speakers the training set
++    # never saw.
++    speaker_range = range(min_speaker, num_speakers)
++    assert len(speaker_range) > 0, 'empty speaker range'
++    speakers_iter = it.cycle(it.product(speaker_range, speaker_range))
+     speakers_batch = list(it.islice(speakers_iter, 0, batch_size))
+     if isinstance(text, str) and os.path.exists(text):
+         texts = it.cycle(
+@@ -492,6 +498,12 @@ def main() -> None:
+         help="Maximum number of speakers to use (default: all)",
+     )
+     parser.add_argument("--min-phoneme-count", type=int)
++    parser.add_argument(
++        "--min-speaker",
++        type=int,
++        default=0,
++        help="Lowest speaker index to use (default: 0)",
++    )
+     parser.add_argument("--phoneme-input", action="store_true")
+     parser.add_argument("--verbose", action="store_true")
+     args = parser.parse_args().__dict__

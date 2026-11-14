@@ -53,6 +53,7 @@ its data on volumes (the wake word trainer in `k8s-homelab` does this):
 | `OKAY_GLADOS_RECORDINGS_DIR` | `okay_glados/recordings` | hand recordings |
 | `OKAY_GLADOS_DEVICE_CLIPS` | `<work>/device_clips.tsv` | device captures, already trimmed and split (see `config.py`) |
 | `OKAY_GLADOS_TRAIN_PYTHON`, `OKAY_GLADOS_PIPER_PYTHON` | `.venv`, `.venv-piper` | the two interpreters |
+| `OKAY_GLADOS_PIPER_DIR` | `<work>/piper-sample-generator` | the patched TTS generator (`patches/piper-sample-generator.patch`) |
 
 `step5_evaluate.py` always writes `metrics.json` next to the report. With
 `--model <tflite> --cutoff <c>` it benchmarks another model (the published one)

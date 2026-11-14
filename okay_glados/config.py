@@ -53,7 +53,10 @@ SEGMENTED_DIR = WORK_DIR / "recordings_segmented"
 MAX_SINGLE_TAKE_S = 4.0
 
 DOWNLOAD_DIR = WORK_DIR / "downloads"
-PIPER_DIR = WORK_DIR / "piper-sample-generator"
+# kahrendt/piper-sample-generator at b5b36e2 with patches/piper-sample-generator.patch
+# applied (a --min-speaker option, for held-out speakers) and
+# models/en_US-libritts_r-medium.pt from rhasspy's v2.0.0 release.
+PIPER_DIR = _env_path("OKAY_GLADOS_PIPER_DIR", WORK_DIR / "piper-sample-generator")
 
 # Augmentation sources
 RIR_DIR = WORK_DIR / "mit_rirs"
