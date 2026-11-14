@@ -155,3 +155,11 @@ training_parameters.yaml
 *.flac
 *.wav
 *.mp3
+# okay_glados pipeline working data
+okay_glados/work/
+okay_glados/logs/
+*.m4a
+# Hand recordings and room audio stay local: only the READMEs are tracked.
+okay_glados/recordings/**
+!okay_glados/recordings/**/
+!okay_glados/recordings/**/README.md

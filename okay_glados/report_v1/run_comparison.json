@@ -1,0 +1,38 @@
+{
+ "B": {
+  "candidates": 24,
+  "best": {
+   "step": 10000,
+   "avr": 0.9488,
+   "frr_at_1faph": 0.054400000000000004,
+   "mean_frr_0_2faph": 0.0676
+  }
+ },
+ "C": {
+  "candidates": 30,
+  "best": {
+   "step": 9500,
+   "avr": 0.94,
+   "frr_at_1faph": 0.1186,
+   "mean_frr_0_2faph": 0.15109999999999998
+  }
+ },
+ "D": {
+  "candidates": 36,
+  "best": {
+   "step": 16000,
+   "avr": 0.9629,
+   "frr_at_1faph": 0.0655,
+   "mean_frr_0_2faph": 0.0867
+  }
+ },
+ "E": {
+  "candidates": 36,
+  "best": {
+   "step": 17000,
+   "avr": 0.945,
+   "frr_at_1faph": 0.1659,
+   "mean_frr_0_2faph": 0.1937
+  }
+ }
+}
