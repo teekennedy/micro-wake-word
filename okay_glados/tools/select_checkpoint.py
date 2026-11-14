@@ -200,7 +200,7 @@ def main():
                     help="validation positives sampled per candidate")
     ap.add_argument("--workers", type=int, default=max(1, (mp.cpu_count() or 4) - 2))
     ap.add_argument("--log", type=Path,
-                    default=pipeline_config.PIPELINE_DIR / "logs" / "step4_train.log")
+                    default=pipeline_config.LOG_DIR / "step4_train.log")
     ap.add_argument("--out", default="checkpoint_selection.json",
                     help="filename under report/ for the results (use a distinct "
                          "name per training run so sweeps do not overwrite "
@@ -252,6 +252,9 @@ def main():
                                / "validation_ambient"]),
         "audioset": ambient_jobs([pipeline_config.FEATURES_AMBIENT_VAL
                                   / "validation_ambient"]),
+        # Held-out room audio from the device itself, when there is any.
+        "home": ambient_jobs([pipeline_config.FEATURES_HOME_AMBIENT
+                              / "validation_ambient"]),
     }
     if not amb_sets["audioset"]:
         raise SystemExit("no AudioSet validation audio -- run step1 and "

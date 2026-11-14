@@ -7,7 +7,7 @@ button press and it is POSTed as a WAV file to a server on the local network.
 
 from esphome import automation
 import esphome.codegen as cg
-from esphome.components import microphone
+from esphome.components import esp32, microphone
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_MICROPHONE, CONF_URL
 
@@ -15,6 +15,7 @@ CODEOWNERS = []
 DEPENDENCIES = ["microphone", "network", "psram"]
 
 CONF_BUFFER_DURATION = "buffer_duration"
+CONF_TOKEN = "token"
 CONF_LABEL = "label"
 CONF_AMBIENT_SAMPLES = "ambient_samples"
 CONF_PER_DAY = "per_day"
@@ -37,6 +38,8 @@ CONFIG_SCHEMA = cv.Schema(
             min_bits_per_sample=16, max_bits_per_sample=16, min_channels=1, max_channels=1
         ),
         cv.Required(CONF_URL): cv.url,
+        # Sent as X-Capture-Token; the receiver rejects uploads without it.
+        cv.Optional(CONF_TOKEN): cv.string_strict,
         cv.Optional(CONF_BUFFER_DURATION, default="12s"): cv.All(
             cv.positive_time_period_milliseconds,
             cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(seconds=60)),
@@ -78,6 +81,10 @@ async def to_code(config):
     mic_source = await microphone.microphone_source_to_code(config[CONF_MICROPHONE], passive=True)
     cg.add(var.set_microphone_source(mic_source))
     cg.add(var.set_url(config[CONF_URL]))
+    if token := config.get(CONF_TOKEN):
+        cg.add(var.set_token(token))
+    # The certificate bundle verifies https:// receivers (Let's Encrypt).
+    esp32.add_idf_sdkconfig_option("CONFIG_MBEDTLS_CERTIFICATE_BUNDLE", True)
     cg.add(var.set_buffer_duration_ms(config[CONF_BUFFER_DURATION]))
     if ambient := config.get(CONF_AMBIENT_SAMPLES):
         cg.add(

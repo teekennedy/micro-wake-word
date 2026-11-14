@@ -416,15 +416,54 @@ def duration_s(path: Path) -> float:
     return float(out.stdout.strip() or 0)
 
 
+SPLITS = ("training", "validation", "testing")
+DEVICE_KINDS = ("positive", "negative", "ambient")
+
+
+def read_device_clips(manifest: Path):
+    """The collector's export (config.DEVICE_CLIPS_MANIFEST), grouped by kind and split.
+
+    Returns {kind: {split: [Path]}}; empty when there is no manifest.
+    """
+    clips = {k: {s: [] for s in SPLITS} for k in DEVICE_KINDS}
+    if not manifest.exists():
+        return clips
+    lines = manifest.read_text().splitlines()
+    if not lines or lines[0].split("\t")[:3] != ["path", "kind", "split"]:
+        raise SystemExit(f"{manifest}: expected a 'path kind split' header")
+    for n, line in enumerate(lines[1:], start=2):
+        if not line.strip():
+            continue
+        path, kind, split = line.split("\t")[:3]
+        if kind not in DEVICE_KINDS or split not in SPLITS:
+            raise SystemExit(f"{manifest}:{n}: unknown kind {kind!r} or split {split!r}")
+        p = Path(path)
+        if not p.is_absolute():
+            p = manifest.parent / p
+        if not p.exists():
+            raise SystemExit(f"{manifest}:{n}: {p} does not exist")
+        clips[kind][split].append(p)
+    for kind in clips.values():
+        for split in kind:
+            kind[split].sort()
+    return clips
+
+
 def build_recorded():
-    print("Recorded (hand-recorded) features")
+    print("Recorded (hand-recorded and device) features")
     all_pos = [p for p in list_audio(config.RECORDINGS_DIR)
                if "hard_negatives" not in p.parts]
     all_neg = list_audio(config.RECORDINGS_DIR / "hard_negatives")
-    if not all_pos and not all_neg:
-        print("  okay_glados/recordings/ is empty -- skipping.")
+    device = read_device_clips(config.DEVICE_CLIPS_MANIFEST)
+    n_device = sum(len(v) for kind in device.values() for v in kind.values())
+    if not all_pos and not all_neg and not n_device:
+        print(f"  {config.RECORDINGS_DIR} is empty and there are no device clips -- skipping.")
         print("  Add wav/m4a/mp3 files there and rerun with --only recorded.")
         return
+    if n_device:
+        print("  device clips: " + ", ".join(
+            f"{kind} {'/'.join(str(len(device[kind][s])) for s in SPLITS)}"
+            for kind in DEVICE_KINDS) + " (training/validation/testing)")
 
     # Long files are sessions of many takes (or an hour of room audio).  Used
     # whole, the augmenter would keep only their last 3.2 s, so they must go
@@ -451,19 +490,26 @@ def build_recorded():
     shutil.rmtree(config.FEATURES_HOME_AMBIENT, ignore_errors=True)
     for stale in (config.FEATURES_ADVERSARIAL / "training").glob("recorded_negative_*_mmap"):
         shutil.rmtree(stale)
-    if raw or seg_pos:
-        out16k = config.WORK_DIR / "recordings_16k"
-        shutil.rmtree(out16k, ignore_errors=True)
-        wavs = sorted(convert_to_wav16k(raw, out16k) + seg_pos)
-        wavs, seg_neg = normalise(wavs, seg_neg, out16k / "normalised")
-        print(f"  {len(wavs)} recordings found")
-        if len(wavs) < 10:
-            print("  WARNING: fewer than 10 recordings; using all of them for "
-                  "training and reporting no recorded-speech test metric.")
-            buckets = {"training": wavs, "validation": [], "testing": []}
-        else:
-            buckets = deterministic_split(
-                wavs, {"training": 0.6, "validation": 0.2, "testing": 0.2})
+    device_pos = device["positive"]
+    if raw or seg_pos or any(device_pos.values()):
+        buckets = {s: [] for s in SPLITS}
+        if raw or seg_pos:
+            out16k = config.WORK_DIR / "recordings_16k"
+            shutil.rmtree(out16k, ignore_errors=True)
+            wavs = sorted(convert_to_wav16k(raw, out16k) + seg_pos)
+            wavs, seg_neg = normalise(wavs, seg_neg, out16k / "normalised")
+            print(f"  {len(wavs)} recordings found")
+            if len(wavs) < 10:
+                print("  WARNING: fewer than 10 recordings; using all of them for "
+                      "training.")
+                buckets["training"] = wavs
+            else:
+                buckets = deterministic_split(
+                    wavs, {"training": 0.6, "validation": 0.2, "testing": 0.2})
+        # Device clips keep the split the collector gave them, and their level:
+        # they are what the model's own microphone tap hears.
+        for split in SPLITS:
+            buckets[split] = buckets[split] + device_pos[split]
         # No VAD trimming (remove_silence): it would strip the lead-in that
         # add_lead_in() just put there.
         # Few clips, so render many augmented variants of each -- but not so
@@ -481,20 +527,27 @@ def build_recorded():
                   "testing", repeat=8, slide_frames=1,
                   mild=True, background_min_snr_db=10, background_max_snr_db=30)
 
-    if negatives or seg_neg or home_train:
+    device_neg = device["negative"]["training"]
+    if negatives or seg_neg or home_train or device_neg:
         out16k = config.WORK_DIR / "recordings_neg_16k"
         shutil.rmtree(out16k, ignore_errors=True)
-        wavs = convert_to_wav16k(negatives, out16k) + seg_neg + home_train
+        wavs = convert_to_wav16k(negatives, out16k) + seg_neg + home_train + device_neg
         print(f"  {len(wavs)} hard-negative clips found")
         repeat = max(4, min(200, round(4000 / len(wavs))))
         build_set("recorded_negative", wavs, config.FEATURES_ADVERSARIAL,
                   "training", repeat=repeat, slide_frames=5)
 
+    home_test = home_test + device["ambient"]["testing"]
     if home_test:
         # Like ambient_extra: unaugmented, streamed whole in step 5 to count
         # false accepts per hour in the room the device actually lives in.
         build_set("home_ambient", home_test, config.FEATURES_HOME_AMBIENT,
                   "testing_ambient", repeat=1, slide_frames=None, augment=False)
+    if device["ambient"]["validation"]:
+        # The same, for checkpoint selection.
+        build_set("home_ambient", device["ambient"]["validation"],
+                  config.FEATURES_HOME_AMBIENT, "validation_ambient",
+                  repeat=1, slide_frames=None, augment=False)
 
 
 def build_ambient_extra():

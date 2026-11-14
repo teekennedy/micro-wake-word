@@ -27,6 +27,7 @@ class AudioCapture : public Component {
 
   void set_microphone_source(microphone::MicrophoneSource *source) { this->microphone_source_ = source; }
   void set_url(const std::string &url) { this->url_ = url; }
+  void set_token(const std::string &token) { this->token_ = token; }
   void set_buffer_duration_ms(uint32_t ms) { this->buffer_duration_ms_ = ms; }
 
   /// Snapshot the buffer and upload it in the background. Returns false if an
@@ -58,6 +59,7 @@ class AudioCapture : public Component {
 
   microphone::MicrophoneSource *microphone_source_{nullptr};
   std::string url_;
+  std::string token_;
   uint32_t buffer_duration_ms_{12000};
   uint32_t sample_rate_{16000};
 

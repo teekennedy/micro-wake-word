@@ -284,14 +284,31 @@ def plot_roc(curves, operating_point, out_path: Path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workers", type=int, default=max(1, (mp.cpu_count() or 4) - 2))
-    ap.add_argument("--log", type=Path, default=config.PIPELINE_DIR / "logs" / "step4_train.log")
+    ap.add_argument("--log", type=Path, default=config.LOG_DIR / "step4_train.log")
     ap.add_argument("--stages", type=int, nargs="*", default=[20000, 40000],
                     help="training steps where the learning rate changed")
     ap.add_argument("--skip-streaming", action="store_true",
                     help="only redraw the training curve")
+    ap.add_argument("--model", type=Path, default=None,
+                    help="benchmark this TFLite model instead of the trained one; "
+                         "implies --metrics-only")
+    ap.add_argument("--cutoff", type=float, default=None,
+                    help="report at this probability cutoff instead of choosing "
+                         "the most sensitive one that meets TARGET_FAPH (use the "
+                         "cutoff a published model ships with)")
+    ap.add_argument("--metrics-only", action="store_true",
+                    help="write metrics.json only: no plots, report or manifest")
     args = ap.parse_args()
+    if args.model is not None:
+        args.metrics_only = True
 
     config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    if args.metrics_only:
+        model_path = args.model or config.TRAIN_DIR / TFLITE_REL
+        if not model_path.exists():
+            raise SystemExit(f"{model_path} not found")
+        benchmark(model_path, args.workers, args.cutoff, write=False)
+        return
 
     print("Parsing the training log ...")
     records = parse_training_log(args.log)
@@ -315,7 +332,11 @@ def main():
     model_path = config.TRAIN_DIR / TFLITE_REL
     if not model_path.exists():
         raise SystemExit(f"{model_path} not found -- run step4 first")
+    benchmark(model_path, args.workers, args.cutoff, write=True, records=records)
 
+
+def benchmark(model_path, workers, fixed_cutoff=None, write=True, records=()):
+    """Stream the held-out sets through the model; write metrics.json (and the report)."""
     print("\nStreaming benchmark (quantized model, held-out data only)")
     ambient_sets = {
         "DiPCo dinner party": [config.NEGATIVE_DIR / "dinner_party_eval" / "testing_ambient"],
@@ -327,7 +348,7 @@ def main():
         jobs = mmap_jobs(dirs)
         if not jobs:
             continue
-        res = run_pool(_ambient_job, jobs, str(model_path), args.workers, name)
+        res = run_pool(_ambient_job, jobs, str(model_path), workers, name)
         faph, hours = ambient_faph(res)
         ambient[name] = {"faph": faph, "hours": hours}
         print(f"    {name}: {hours:.2f} h")
@@ -348,14 +369,14 @@ def main():
         jobs = mmap_jobs(dirs)
         if not jobs:
             continue
-        scores = run_pool(_positive_job, jobs, str(model_path), args.workers, name)
+        scores = run_pool(_positive_job, jobs, str(model_path), workers, name)
         positives[name] = {"scores": scores, "frr": frr_at_cutoffs(scores)}
 
     adversarial_jobs = mmap_jobs([config.FEATURES_ADVERSARIAL / "testing"])
     adversarial = None
     if adversarial_jobs:
         scores = run_pool(_positive_job, adversarial_jobs, str(model_path),
-                          args.workers, "Near-miss phrases")
+                          workers, "Near-miss phrases")
         adversarial = np.array([(np.asarray(scores) > c).mean() for c in CUTOFFS])
 
     # Headline false-reject rate: normal-use speech, plus any hand recordings.
@@ -374,6 +395,8 @@ def main():
     # is the bar; TARGET_FAPH is only the fallback.
     zero_fa = np.flatnonzero(combined_faph == 0)
     viable = np.flatnonzero(combined_faph <= config.TARGET_FAPH)
+    if fixed_cutoff is not None:
+        viable = np.array([int(np.abs(CUTOFFS - fixed_cutoff).argmin())])
     operating = None
     if viable.size:
         i = int(viable[0])
@@ -391,11 +414,51 @@ def main():
     else:
         print("\n  WARNING: no cutoff reaches the target false-accept rate")
 
+    write_metrics(model_path, ambient, positives, adversarial, combined_faph,
+                  overall_frr, operating, total_hours, fixed_cutoff)
+    if not write:
+        return
+
     curves = [(name, combined_faph, v["frr"]) for name, v in positives.items()]
     plot_roc(curves, operating, config.REPORT_DIR / "roc_curve.png")
 
     write_report(records, ambient, positives, adversarial, combined_faph,
                  overall_frr, operating, total_hours, model_path)
+
+
+def write_metrics(model_path, ambient, positives, adversarial, combined_faph,
+                  overall_frr, operating, total_hours, fixed_cutoff):
+    """metrics.json: the operating point and every per-set number at it.
+
+    This is what the wake word trainer compares when it decides whether a new
+    model replaces the published one, so the keys are a contract.
+    """
+    i = operating["index"] if operating else None
+
+    def at(curve):
+        return None if i is None else float(curve[i])
+
+    metrics = {
+        "model": str(model_path),
+        "cutoff_source": "fixed" if fixed_cutoff is not None else "target_faph",
+        "target_faph": config.TARGET_FAPH,
+        "operating": None if operating is None else {
+            k: v for k, v in operating.items() if k != "index"},
+        "ambient_hours": total_hours,
+        "faph": at(combined_faph),
+        "frr": at(overall_frr),
+        "ambient": {name: {"hours": v["hours"], "faph": at(v["faph"])}
+                    for name, v in ambient.items()},
+        "positives": {name: {"n": len(v["scores"]), "frr": at(v["frr"])}
+                      for name, v in positives.items()},
+        "near_miss_accept_rate": None if adversarial is None else at(adversarial),
+    }
+    real = positives.get("Hand recorded (held out)")
+    metrics["recorded_frr"] = at(real["frr"]) if real else None
+    metrics["recorded_n"] = len(real["scores"]) if real else 0
+    out = config.REPORT_DIR / "metrics.json"
+    out.write_text(json.dumps(metrics, indent=2) + "\n")
+    print(f"  wrote {out}")
 
 
 def write_report(records, ambient, positives, adversarial, combined_faph,

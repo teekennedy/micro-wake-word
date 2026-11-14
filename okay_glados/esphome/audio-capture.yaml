@@ -13,15 +13,27 @@
 # Add to your device config as a package, after the Voice PE package:
 #
 #   packages:
-#     capture: !include { file: audio-capture.yaml, vars: { capture_url: "http://10.69.100.X:8787/" } }
+#     capture:
+#       url: https://github.com/teekennedy/micro-wake-word
+#       ref: main
+#       files:
+#         - path: okay_glados/esphome/audio-capture.yaml
+#           vars:
+#             capture_token: !secret wake_word_capture_token
+#
+# capture_token is the collector's X-Capture-Token (README.md, "Receiver").
 
 substitutions:
-  capture_url: "http://CHANGE-ME:8787/"
+  capture_url: "https://wake-word.msng.to/capture"
+  capture_token: ""
+  capture_ref: main
 
 external_components:
   - source:
-      type: local
-      path: components        # the folder holding audio_capture/
+      type: git
+      url: https://github.com/teekennedy/micro-wake-word
+      ref: ${capture_ref}
+      path: okay_glados/esphome/components
     components: [audio_capture]
 
 globals:
@@ -35,6 +47,7 @@ globals:
 audio_capture:
   id: wake_word_capture
   url: ${capture_url}
+  token: ${capture_token}
   buffer_duration: 12s
   # Same tap as micro_wake_word in home-assistant-voice.yaml: keep these equal.
   microphone:

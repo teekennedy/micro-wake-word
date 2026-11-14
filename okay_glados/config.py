@@ -13,11 +13,33 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PIPELINE_DIR = PROJECT_ROOT / "okay_glados"
-WORK_DIR = PIPELINE_DIR / "work"
+
+
+def _env_path(name: str, default: Path) -> Path:
+    value = os.environ.get(name)
+    return Path(value) if value else default
+
+
+# Each of these can be moved off the source tree with an environment variable,
+# so the pipeline can run from a read-only install with its data on volumes
+# (the wake word trainer service in k8s-homelab does).
+WORK_DIR = _env_path("OKAY_GLADOS_WORK_DIR", PIPELINE_DIR / "work")
+LOG_DIR = _env_path("OKAY_GLADOS_LOG_DIR", PIPELINE_DIR / "logs")
 
 # Where *you* drop hand-recorded wav files of the wake word.  See
 # okay_glados/recordings/README.md.
-RECORDINGS_DIR = PIPELINE_DIR / "recordings"
+RECORDINGS_DIR = _env_path("OKAY_GLADOS_RECORDINGS_DIR", PIPELINE_DIR / "recordings")
+
+# Clips captured on the device and already transcribed, trimmed and assigned a
+# split by the wake word trainer's collector: a TSV with the columns
+#   path  kind  split
+# kind is "positive" (lead-in + wake word), "negative" (speech or room audio,
+# trained on) or "ambient" (room audio held out whole for the streamed home
+# false-accept test).  split is training / validation / testing, fixed per clip
+# so the test set stays comparable from run to run.  Unlike the phone
+# recordings these are neither normalised nor re-split: they come from the
+# model's own microphone tap and gain.
+DEVICE_CLIPS_MANIFEST = _env_path("OKAY_GLADOS_DEVICE_CLIPS", WORK_DIR / "device_clips.tsv")
 
 # Long recording *sessions* (many takes in one file, or an hour of room audio
 # in recordings/hard_negatives/) are split into individual clips by
@@ -72,13 +94,15 @@ NEGATIVE_DIR = WORK_DIR / "negative_datasets"
 # several runs can be trained (and swept) side by side.
 RUN_NAME = os.environ.get("OKAY_GLADOS_RUN", "")
 TRAIN_DIR = WORK_DIR / "trained_models" / ("okay_glados" + (f"_{RUN_NAME}" if RUN_NAME else ""))
-REPORT_DIR = (PIPELINE_DIR / "experiments_v2" / f"report_{RUN_NAME}" if RUN_NAME
-              else PIPELINE_DIR / "report")
+REPORT_DIR = _env_path(
+    "OKAY_GLADOS_REPORT_DIR",
+    PIPELINE_DIR / "experiments_v2" / f"report_{RUN_NAME}" if RUN_NAME
+    else PIPELINE_DIR / "report")
 
 # The virtualenv that holds torch + piper (kept separate from the training env
 # because piper-sample-generator pins numpy<2 while microWakeWord needs numpy>=2)
-PIPER_PYTHON = PROJECT_ROOT / ".venv-piper" / "bin" / "python"
-TRAIN_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
+PIPER_PYTHON = _env_path("OKAY_GLADOS_PIPER_PYTHON", PROJECT_ROOT / ".venv-piper" / "bin" / "python")
+TRAIN_PYTHON = _env_path("OKAY_GLADOS_TRAIN_PYTHON", PROJECT_ROOT / ".venv" / "bin" / "python")
 
 # --------------------------------------------------------------------------- #
 # The wake word

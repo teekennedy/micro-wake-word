@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config  # noqa: E402
 
 _SUFFIX = f"_{config.RUN_NAME}" if config.RUN_NAME else ""
-LOG_PATH = config.PIPELINE_DIR / "logs" / f"step4_train{_SUFFIX}.log"
+LOG_PATH = config.LOG_DIR / f"step4_train{_SUFFIX}.log"
 
 # --- architecture (matches the v2 okay_nabu / hey_jarvis topology) ---------- #
 MODEL_FLAGS = [

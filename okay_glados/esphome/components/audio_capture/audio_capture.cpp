@@ -6,6 +6,7 @@
 #include "esphome/core/log.h"
 
 #include <esp_heap_caps.h>
+#include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 
 #include <cmath>
@@ -242,6 +243,9 @@ bool AudioCapture::post_snapshot_() {
   config.url = this->url_.c_str();
   config.method = HTTP_METHOD_POST;
   config.timeout_ms = 10000;
+  // https:// URLs are verified against the ESP-IDF certificate bundle; it is
+  // ignored for plain http://.
+  config.crt_bundle_attach = esp_crt_bundle_attach;
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (client == nullptr) {
     ESP_LOGE(TAG, "Could not create the HTTP client");
@@ -250,6 +254,9 @@ bool AudioCapture::post_snapshot_() {
   esp_http_client_set_header(client, "Content-Type", "audio/wav");
   esp_http_client_set_header(client, this->relabel_only_ ? "X-Relabel-Last" : "X-Label", this->label_.c_str());
   esp_http_client_set_header(client, "X-Device", App.get_name().c_str());
+  if (!this->token_.empty()) {
+    esp_http_client_set_header(client, "X-Capture-Token", this->token_.c_str());
+  }
 
   bool ok = false;
   esp_err_t err = esp_http_client_open(client, this->snapshot_size_);

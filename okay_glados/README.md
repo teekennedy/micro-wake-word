@@ -39,6 +39,26 @@ cutoff 0.84 gives none at all for 9.12%. The full curve is in
 `report/REPORT.md` and `report/roc_curve.png`, and the cutoff is a one-line
 change in `report/okay_glados.json`.
 
+### Running outside the source tree
+
+Every path comes from `config.py`. These environment variables move the
+writable parts elsewhere, so the pipeline can run from a read-only install with
+its data on volumes (the wake word trainer in `k8s-homelab` does this):
+
+| Variable | Default | What |
+|---|---|---|
+| `OKAY_GLADOS_WORK_DIR` | `okay_glados/work` | datasets, TTS output, features, checkpoints |
+| `OKAY_GLADOS_LOG_DIR` | `okay_glados/logs` | training logs |
+| `OKAY_GLADOS_REPORT_DIR` | `report/` or `experiments_v2/report_<run>/` | report, plots, `metrics.json`, model |
+| `OKAY_GLADOS_RECORDINGS_DIR` | `okay_glados/recordings` | hand recordings |
+| `OKAY_GLADOS_DEVICE_CLIPS` | `<work>/device_clips.tsv` | device captures, already trimmed and split (see `config.py`) |
+| `OKAY_GLADOS_TRAIN_PYTHON`, `OKAY_GLADOS_PIPER_PYTHON` | `.venv`, `.venv-piper` | the two interpreters |
+
+`step5_evaluate.py` always writes `metrics.json` next to the report. With
+`--model <tflite> --cutoff <c>` it benchmarks another model (the published one)
+on the same held-out data at that model's own cutoff, writing only
+`metrics.json`.
+
 ---
 
 ## The pronunciation problem (read this before regenerating samples)
