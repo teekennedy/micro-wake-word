@@ -1,0 +1,112 @@
+# Wake word data collection for the Home Assistant Voice PE, plus a spoken
+# "stop" that cancels a wrongly triggered request.
+#
+# What gets saved, by label:
+#   detected      every wake word detection (the 12 s leading up to it)
+#   false_accept  a detection re-labelled because you said "stop" before the
+#                 reply started, or triple-pressed the centre button
+#   false_reject  the last 12 s, when you double-press the centre button
+#                 ("I just said it and it ignored me" -- press within ~8 s)
+#   true_reject   up to 8 randomly timed samples a day of audio that has sound
+#                 in it and triggered nothing
+#
+# Add to your device config as a package, after the Voice PE package:
+#
+#   packages:
+#     capture: !include { file: audio-capture.yaml, vars: { capture_url: "http://10.69.100.X:8787/" } }
+
+substitutions:
+  capture_url: "http://CHANGE-ME:8787/"
+
+external_components:
+  - source:
+      type: local
+      path: components        # the folder holding audio_capture/
+    components: [audio_capture]
+
+globals:
+  # True from the moment the command audio has been sent off until the reply
+  # starts: the window in which "stop" means "that was a false accept".
+  - id: stop_marks_false_accept
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+audio_capture:
+  id: wake_word_capture
+  url: ${capture_url}
+  buffer_duration: 12s
+  # Same tap as micro_wake_word in home-assistant-voice.yaml: keep these equal.
+  microphone:
+    microphone: i2s_mics
+    channels: 1
+    gain_factor: 4
+  ambient_samples:
+    per_day: 8
+    label: true_reject
+    min_level: -50       # dBFS; raise it if quiet rooms get sampled
+    min_active: 30%
+
+micro_wake_word:
+  on_wake_word_detected:
+    # These run after the Voice PE's own actions, which have already stopped
+    # the assistant if "stop" (or any wake word) was heard while it was running.
+    - if:
+        condition:
+          lambda: return str_lower_case(wake_word) == "stop";
+        then:
+          - if:
+              condition:
+                lambda: return id(stop_marks_false_accept);
+              then:
+                - lambda: id(stop_marks_false_accept) = false;
+                - audio_capture.tag_last:
+                    id: wake_word_capture
+                    label: false_accept
+        else:
+          # The short delay lets the buffer catch the tail of the word.
+          - delay: 300ms
+          - audio_capture.upload:
+              id: wake_word_capture
+              label: detected
+
+voice_assistant:
+  # Command audio sent, waiting on Home Assistant: start listening for "stop".
+  on_stt_vad_end:
+    - lambda: id(stop_marks_false_accept) = true;
+    - micro_wake_word.enable_model: stop
+  # Once the reply starts, "stop" still stops it but no longer tags anything.
+  on_intent_progress:
+    - if:
+        condition:
+          lambda: 'return !x.empty();'
+        then:
+          - lambda: id(stop_marks_false_accept) = false;
+  on_tts_start:
+    - lambda: id(stop_marks_false_accept) = false;
+  on_end:
+    - lambda: id(stop_marks_false_accept) = false;
+    - if:
+        condition:
+          switch.is_off: timer_ringing
+        then:
+          - micro_wake_word.disable_model: stop
+
+event:
+  - platform: template
+    id: !extend button_press_event
+    on_event:
+      - if:
+          condition:
+            lambda: return event_type == "double_press";
+          then:
+            - audio_capture.upload:
+                id: wake_word_capture
+                label: false_reject
+      - if:
+          condition:
+            lambda: return event_type == "triple_press";
+          then:
+            - audio_capture.tag_last:
+                id: wake_word_capture
+                label: false_accept

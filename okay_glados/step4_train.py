@@ -22,7 +22,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config  # noqa: E402
 
-LOG_PATH = config.PIPELINE_DIR / "logs" / "step4_train.log"
+_SUFFIX = f"_{config.RUN_NAME}" if config.RUN_NAME else ""
+LOG_PATH = config.PIPELINE_DIR / "logs" / f"step4_train{_SUFFIX}.log"
 
 # --- architecture (matches the v2 okay_nabu / hey_jarvis topology) ---------- #
 MODEL_FLAGS = [
@@ -47,7 +48,7 @@ def any_split(features_dir: Path) -> bool:
 
 def build_config(training_steps, learning_rates, negative_class_weight,
                  eval_step_interval, batch_size, spec_augment_stages=0,
-                 positive_weight=2.0, adversarial_weight=4.0):
+                 positive_weight=2.0, adversarial_weight=4.0, recorded_weight=0.75):
     n = len(training_steps)
     if spec_augment_stages:
         # Enable it only for the last `spec_augment_stages` stages.
@@ -78,7 +79,7 @@ def build_config(training_steps, learning_rates, negative_class_weight,
     # Hand-recorded wake word.  Weighted lower than the synthetic set because
     # it is far smaller: enough to pull the decision boundary toward the real
     # speaker, not enough to overfit a handful of clips.
-    add(config.FEATURES_POSITIVE_RECORDED, True, 0.75, "truncate_start")
+    add(config.FEATURES_POSITIVE_RECORDED, True, recorded_weight, "truncate_start")
 
     # --- negatives ------------------------------------------------------ #
     # Near-miss phrases carry the most weight per sample: they are what keeps
@@ -93,6 +94,8 @@ def build_config(training_steps, learning_rates, negative_class_weight,
     # training) and DiPCo as testing_ambient (final streaming benchmark).
     add(config.NEGATIVE_DIR / "dinner_party_eval", False, 0.0, "split")
     add(config.FEATURES_AMBIENT_EXTRA, False, 0.0, "split")
+    # validation_ambient only: lets the trainer's own metric see music and TV.
+    add(config.FEATURES_AMBIENT_VAL, False, 0.0, "split")
     add(config.FEATURES_HOME_AMBIENT, False, 0.0, "split")
 
     cfg = {
@@ -136,6 +139,8 @@ def main():
                     help="sampling weight of the synthetic wake-word set")
     ap.add_argument("--adversarial-weight", type=float, default=4.0,
                     help="sampling weight of the near-miss phrase set")
+    ap.add_argument("--recorded-weight", type=float, default=0.75,
+                    help="sampling weight of the hand-recorded wake-word set")
     ap.add_argument("--spec-augment-stages", type=int, default=0,
                     help="enable SpecAugment for the last N stages (default 0: "
                          "off -- it measured worse on this task)")
@@ -146,7 +151,7 @@ def main():
     ap.add_argument("--train", type=int, default=1,
                     help="0 = skip training, just convert + benchmark best weights")
     ap.add_argument("--config-out", type=Path,
-                    default=config.WORK_DIR / "training_parameters.yaml")
+                    default=config.WORK_DIR / f"training_parameters{_SUFFIX}.yaml")
     ap.add_argument("--log", type=Path, default=LOG_PATH)
     args = ap.parse_args()
 
@@ -162,7 +167,7 @@ def main():
     cfg = build_config(args.steps, args.learning_rates, args.negative_class_weight,
                        args.eval_step_interval, args.batch_size,
                        args.spec_augment_stages, args.positive_weight,
-                       args.adversarial_weight)
+                       args.adversarial_weight, args.recorded_weight)
     if not any(f["truth"] for f in cfg["features"]):
         raise SystemExit("No positive feature sets found -- run step3 first")
 

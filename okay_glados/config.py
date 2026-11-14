@@ -4,6 +4,7 @@ Every stage of the pipeline imports this module so that paths, sample counts and
 hyperparameters live in exactly one place.
 """
 
+import os
 from pathlib import Path
 
 # --------------------------------------------------------------------------- #
@@ -39,6 +40,10 @@ BACKGROUND_FMA_DIR = WORK_DIR / "fma_16k"
 
 # Held-out real-world audio used only as an extra ambient *test* set.
 AMBIENT_EXTRA_DIR = WORK_DIR / "audioset_ambient_16k"
+# A second, disjoint AudioSet eval slice used only for *checkpoint selection*.
+# The CHiME-6 validation audio is dinner-party speech with almost no music or
+# TV, so a checkpoint that fires on those looked fine until the final test.
+AMBIENT_VAL_DIR = WORK_DIR / "audioset_ambient_val_16k"
 
 # TTS output
 POSITIVE_TRAIN_DIR = WORK_DIR / "positive_train"
@@ -55,6 +60,7 @@ FEATURES_POSITIVE_CLEAN = FEATURES_DIR / "positive_clean"
 FEATURES_POSITIVE_RECORDED = FEATURES_DIR / "positive_recorded"
 FEATURES_ADVERSARIAL = FEATURES_DIR / "adversarial"
 FEATURES_AMBIENT_EXTRA = FEATURES_DIR / "ambient_extra"
+FEATURES_AMBIENT_VAL = FEATURES_DIR / "ambient_val"
 # Held-out blocks of your own room audio, streamed for false accepts per hour.
 FEATURES_HOME_AMBIENT = FEATURES_DIR / "home_ambient"
 
@@ -62,8 +68,12 @@ FEATURES_HOME_AMBIENT = FEATURES_DIR / "home_ambient"
 NEGATIVE_DIR = WORK_DIR / "negative_datasets"
 
 # Training output
-TRAIN_DIR = WORK_DIR / "trained_models" / "okay_glados"
-REPORT_DIR = PIPELINE_DIR / "report"
+# OKAY_GLADOS_RUN=<name> trains into trained_models/okay_glados_<name>, so
+# several runs can be trained (and swept) side by side.
+RUN_NAME = os.environ.get("OKAY_GLADOS_RUN", "")
+TRAIN_DIR = WORK_DIR / "trained_models" / ("okay_glados" + (f"_{RUN_NAME}" if RUN_NAME else ""))
+REPORT_DIR = (PIPELINE_DIR / "experiments_v2" / f"report_{RUN_NAME}" if RUN_NAME
+              else PIPELINE_DIR / "report")
 
 # The virtualenv that holds torch + piper (kept separate from the training env
 # because piper-sample-generator pins numpy<2 while microWakeWord needs numpy>=2)
@@ -98,6 +108,21 @@ POSITIVE_SPELLINGS = [
     ("Okay gladohce", 0.14),   # oʊkˈeɪ ɡlˈædoʊs   voiceless final /s/
     ("Ok gladohs", 0.13),      # ˌoʊkˈeɪ ɡlˈædoʊz  weaker stress on "o-"
 ]
+
+# How people actually say it.  A phoneme recogniser run over the 70 hand
+# recordings (two speakers) heard a reduced or open final vowel and a voiceless
+# /s/ in nearly every take -- "GLAD-us" / "GLAD-oss", the way the name is said
+# in the games -- and the "-ohz" of the spellings above in only a handful.  v1
+# was trained on "-ohz" alone and missed half of the real takes.  These are
+# generated as an *additional* training set (positive_train/*_spoken) so the
+# original samples and every held-out set stay exactly as they were.
+POSITIVE_SPELLINGS_SPOKEN = [
+    ("Okay gladus", 0.40),     # oʊkˈeɪ ɡlˈædəs
+    ("Okay gladoss", 0.30),    # oʊkˈeɪ ɡlˈædɑːs   the in-game pronunciation
+    ("Okay gladiss", 0.20),    # oʊkˈeɪ ɡlˈædɪs    what Whisper hears as "Gladys"
+    ("Okay gladush", 0.10),    # oʊkˈeɪ ɡlˈædʌʃ    retracted final consonant
+]
+N_POSITIVE_TRAIN_SPOKEN = 12000
 
 # Every spelling above must phonemise with this nucleus.  "ɡlˈɑːd" ("GLAH-dos")
 # is what the rejected "Okay glados" spelling produces, and spellings such as

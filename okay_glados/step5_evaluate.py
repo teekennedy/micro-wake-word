@@ -301,7 +301,7 @@ def main():
     if sel.exists():
         try:
             entries = json.loads(sel.read_text())
-            shipped_step = min(entries, key=lambda e: e["mean_frr_0_2faph"])["step"]
+            shipped_step = min(entries, key=lambda e: e.get("score", e.get("mean_frr_0_2faph")))["step"]
         except (ValueError, KeyError):
             shipped_step = None
     plot_training(records, config.REPORT_DIR / "training_progress.png",

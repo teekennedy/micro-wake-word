@@ -140,6 +140,70 @@ def session_of(path: Path) -> str:
     return re.sub(r"_(bg)?\d{4}$", "", Path(path).stem)
 
 
+LEAD_IN_S = 1.5
+
+
+def add_lead_in(seg_dir: Path):
+    """Re-cut each segmented wake word with the session audio that preceded it.
+
+    The segmenter cuts takes tightly (0.12 s of padding).  Rendered into a
+    3.2 s window that puts digital silence, then an abrupt step up to the
+    room's noise floor, right before every real wake word -- and models trained
+    on that fired three times as often in the first two seconds of a test clip
+    as anywhere else: they had learned the step.  On the device the wake word
+    is always preceded by continuous room sound, so give it that: up to
+    LEAD_IN_S of what was actually recorded before the take (stopping at the
+    previous take).  Returns the new clip paths, in the same order.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+    from segment_recordings import load16k
+
+    rows = {}
+    for line in (seg_dir / "manifest.tsv").read_text().splitlines()[1:]:
+        name, start, end, decision = line.split("\t")[:4]
+        if decision.startswith("positive"):
+            rows.setdefault(name, []).append((float(start), float(end)))
+    sessions = {}
+    for src in list_audio(config.RECORDINGS_DIR):
+        if src.name in rows:
+            tag = re.sub(r"[^A-Za-z0-9]+", "_", str(
+                src.relative_to(config.RECORDINGS_DIR).with_suffix(""))).strip("_")
+            sessions[tag] = (src, sorted(rows[src.name]))
+
+    out_dir = seg_dir / "positive_leadin"
+    shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True)
+    result, lead_total = [], 0.0
+    for tag, (src, takes) in sorted(sessions.items()):
+        audio = load16k(src)
+        clips = sorted((seg_dir / "positive").glob(f"{tag}_[0-9][0-9][0-9][0-9].wav"))
+        if len(clips) != len(takes):
+            raise SystemExit(f"{src.name}: {len(clips)} clips but {len(takes)} manifest rows "
+                             "-- rerun tools/segment_recordings.py")
+        prev_end = 0
+        for clip_path, (start, end) in zip(clips, takes):
+            clip, _ = sf.read(clip_path, dtype="float32")
+            a = int(round(start * 16000))
+            n = min(len(clip), 4000)
+            if np.abs(audio[a:a + n] - clip[:n]).max() > 1e-3:
+                raise SystemExit(f"{clip_path.name} does not match {src.name} at {start:.2f} s")
+            lo = max(prev_end, a - int(LEAD_IN_S * 16000), 0)
+            lead = audio[lo:a].copy()
+            fade = min(len(lead), 800)           # 50 ms fade-in, no click
+            lead[:fade] *= np.linspace(0, 1, fade, dtype=np.float32)
+            dest = out_dir / clip_path.name
+            sf.write(dest, np.concatenate([lead, clip]), 16000, subtype="PCM_16")
+            result.append(dest)
+            lead_total += len(lead) / 16000
+            prev_end = a + len(clip)
+    print(f"  lead-in added to {len(result)} takes "
+          f"(mean {lead_total / max(1, len(result)):.2f} s)")
+    return sorted(result)
+
+
 def normalise(positives, session_negatives, out_dir: Path, peak_dbfs: float = -3.0):
     """Bring hand recordings up to the level of the TTS clips.
 
@@ -302,8 +366,11 @@ def build_set(name, paths, features_dir: Path, split: str, repeat: int,
 
 def build_positive():
     print("Positive (synthetic) features")
-    build_set("positive", list_audio(config.POSITIVE_TRAIN_DIR), config.FEATURES_POSITIVE,
-              "training", repeat=2, slide_frames=5)
+    train = list_audio(config.POSITIVE_TRAIN_DIR)
+    spoken = [p for p in train if p.parent.name.endswith("_spoken")]
+    build_set("positive", [p for p in train if not p.parent.name.endswith("_spoken")],
+              config.FEATURES_POSITIVE, "training", repeat=2, slide_frames=5)
+    build_positive_spoken(spoken)
     heldout = list_audio(config.POSITIVE_HELDOUT_DIR)
     buckets = deterministic_split(heldout, {"validation": 0.5, "testing": 0.5})
     build_set("positive", buckets["validation"], config.FEATURES_POSITIVE,
@@ -316,6 +383,19 @@ def build_positive():
     build_set("positive_clean", buckets["testing"], config.FEATURES_POSITIVE_CLEAN,
               "testing", repeat=1, slide_frames=1, mild=True,
               background_min_snr_db=10, background_max_snr_db=30)
+
+
+def build_positive_spoken(paths=None):
+    """The real-speaker pronunciations (config.POSITIVE_SPELLINGS_SPOKEN).
+
+    A separate shard family inside positive/training, so it can be (re)built
+    with ``--only spoken`` without touching the 14 GB original set.
+    """
+    if paths is None:
+        paths = [p for p in list_audio(config.POSITIVE_TRAIN_DIR)
+                 if p.parent.name.endswith("_spoken")]
+    build_set("positive_spoken", paths, config.FEATURES_POSITIVE,
+              "training", repeat=2, slide_frames=5)
 
 
 def build_adversarial():
@@ -358,7 +438,7 @@ def build_recorded():
         raise SystemExit(
             f"{len(sessions) + len(neg_sessions)} recording(s) are longer than "
             f"{config.MAX_SINGLE_TAKE_S:.0f} s -- run tools/segment_recordings.py first")
-    seg_pos = list_audio(seg / "positive") if sessions else []
+    seg_pos = add_lead_in(seg) if sessions else []
     seg_neg = (list_audio(seg / "negative") + list_audio(seg / "background")
                if sessions else [])
     home_train = list_audio(seg / "home_train") if neg_sessions else []
@@ -384,19 +464,21 @@ def build_recorded():
         else:
             buckets = deterministic_split(
                 wavs, {"training": 0.6, "validation": 0.2, "testing": 0.2})
+        # No VAD trimming (remove_silence): it would strip the lead-in that
+        # add_lead_in() just put there.
         # Few clips, so render many augmented variants of each -- but not so
         # many that the model can memorise each clip's background.
         repeat = max(4, min(100, round(2000 / max(1, len(buckets["training"])))))
         build_set("recorded", buckets["training"], config.FEATURES_POSITIVE_RECORDED,
-                  "training", repeat=repeat, slide_frames=5, remove_silence=True)
+                  "training", repeat=repeat, slide_frames=5)
         # Held-out recordings already carry real room acoustics and noise, so
         # they are rendered with the mild "normal use" profile, matching how
         # the synthetic normal-use test set is built.
         build_set("recorded", buckets["validation"], config.FEATURES_POSITIVE_RECORDED,
-                  "validation", repeat=8, slide_frames=5, remove_silence=True,
+                  "validation", repeat=8, slide_frames=5,
                   mild=True, background_min_snr_db=10, background_max_snr_db=30)
         build_set("recorded", buckets["testing"], config.FEATURES_POSITIVE_RECORDED,
-                  "testing", repeat=8, slide_frames=1, remove_silence=True,
+                  "testing", repeat=8, slide_frames=1,
                   mild=True, background_min_snr_db=10, background_max_snr_db=30)
 
     if negatives or seg_neg or home_train:
@@ -425,18 +507,26 @@ def build_ambient_extra():
     # accepts per hour, so they must stay pristine, real-world audio.
     build_set("ambient_extra", paths, config.FEATURES_AMBIENT_EXTRA, "testing_ambient",
               repeat=1, slide_frames=None, augment=False)
+    # A disjoint slice for checkpoint selection (and the trainer's own
+    # validation pass), so music and TV false accepts are visible before the
+    # test set is touched.
+    build_set("ambient_val", list_audio(config.AMBIENT_VAL_DIR),
+              config.FEATURES_AMBIENT_VAL, "validation_ambient",
+              repeat=1, slide_frames=None, augment=False)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", nargs="*", default=None,
-                    choices=["positive", "adversarial", "recorded", "ambient"],
+                    choices=["positive", "spoken", "adversarial", "recorded", "ambient"],
                     help="build only these feature sets")
     args = ap.parse_args()
     todo = args.only or ["positive", "adversarial", "recorded", "ambient"]
 
     if "positive" in todo:
         build_positive()
+    elif "spoken" in todo:
+        build_positive_spoken()
     if "adversarial" in todo:
         build_adversarial()
     if "recorded" in todo:
@@ -448,6 +538,7 @@ def main():
     for d in [config.FEATURES_POSITIVE, config.FEATURES_POSITIVE_CLEAN,
               config.FEATURES_POSITIVE_RECORDED,
               config.FEATURES_ADVERSARIAL, config.FEATURES_AMBIENT_EXTRA,
+              config.FEATURES_AMBIENT_VAL,
               config.FEATURES_HOME_AMBIENT]:
         if d.exists():
             size = sum(f.stat().st_size for f in d.glob("**/*") if f.is_file())

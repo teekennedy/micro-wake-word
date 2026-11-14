@@ -111,6 +111,16 @@ def main():
     generate(positive_txt, config.POSITIVE_TRAIN_DIR / "carrier", n_carrier, 0,
              config.TRAIN_MAX_SPEAKER, min_phoneme_count=60)
 
+    # The same again for the pronunciations real speakers use (training only).
+    spoken_txt = write_phrase_file(text_dir / "positive_spoken.txt",
+                                   config.POSITIVE_SPELLINGS_SPOKEN)
+    n_plain_sp = int(config.N_POSITIVE_TRAIN_SPOKEN * 0.7)
+    generate(spoken_txt, config.POSITIVE_TRAIN_DIR / "plain_spoken", n_plain_sp, 0,
+             config.TRAIN_MAX_SPEAKER)
+    generate(spoken_txt, config.POSITIVE_TRAIN_DIR / "carrier_spoken",
+             config.N_POSITIVE_TRAIN_SPOKEN - n_plain_sp, 0,
+             config.TRAIN_MAX_SPEAKER, min_phoneme_count=60)
+
     n_plain_ho = int(config.N_POSITIVE_HELDOUT * 0.7)
     generate(positive_txt, config.POSITIVE_HELDOUT_DIR / "plain", n_plain_ho,
              config.HELDOUT_MIN_SPEAKER, config.HELDOUT_MAX_SPEAKER)

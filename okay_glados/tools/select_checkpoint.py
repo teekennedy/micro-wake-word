@@ -59,6 +59,10 @@ def _smooth(p):
 
 
 def _ambient(job):
+    return (job.get("set"), *_ambient_counts(job))
+
+
+def _ambient_counts(job):
     spec = RaggedMmap(job["path"])[job["index"]][job["start"]:job["stop"]]
     probs = _W["model"].predict_spectrogram(spec)
     hours = len(probs) * pipeline_config.STRIDE * (pipeline_config.WINDOW_STEP_MS / 1000) / 3600
@@ -141,41 +145,57 @@ def evaluate(model_path, amb_jobs, pos_jobs, workers, rec_jobs=()):
         amb = list(pool.imap_unordered(_ambient, amb_jobs, chunksize=1))
         scores = list(pool.imap_unordered(_positive, pos_jobs, chunksize=8))
         rec = list(pool.imap_unordered(_positive, rec_jobs, chunksize=8))
-    accepts = np.sum([a for a, _ in amb], axis=0)
-    hours = float(np.sum([h for _, h in amb]))
+    accepts = np.sum([a for _, a, _ in amb], axis=0)
+    hours = float(np.sum([h for _, _, h in amb]))
     faph = accepts / hours
+    by_set = {}
+    for name in sorted({n for n, _, _ in amb if n}):
+        h = float(np.sum([hh for n, _, hh in amb if n == name]))
+        by_set[name] = (np.sum([a for n, a, _ in amb if n == name], axis=0) / h, h)
 
     def curve(s):
         s = np.asarray(s)
         return np.array([(s <= c).mean() for c in CUTOFFS])
 
-    return faph, curve(scores), hours, (curve(rec) if rec else None)
+    return faph, curve(scores), hours, (curve(rec) if rec else None), by_set
 
 
-def summarise(faph, frr):
-    """FRR at 1 false accept/hour, and the mean FRR across 0-2 accepts/hour."""
-    order = np.argsort(faph)
+# The region the score integrates over.  It used to be 0-2 false accepts per
+# hour (microWakeWord's own "viable" range), but the model ships at
+# TARGET_FAPH = 0.1/h: a checkpoint could win on its behaviour at 1-2/h while
+# being unusable where it is actually operated.
+MAX_FAPH = 0.5
+
+
+def summarise(faph, frr, max_faph=MAX_FAPH):
+    """FRR at the shipping target, and the mean FRR across 0..max_faph accepts/hour."""
+    viable = np.flatnonzero(faph <= pipeline_config.TARGET_FAPH)
+    frr_at_target = float(frr[viable[0]]) if viable.size else 1.0
+    order = np.argsort(faph, kind="stable")
     x, y = faph[order], frr[order]
-    keep = x <= 2.0
+    keep = x <= max_faph
     x, y = x[keep], y[keep]
     if x.size < 2:
-        return 1.0, 1.0
-    frr_at_1 = float(np.interp(1.0, x, y))
-    # Extend the curve to faph=0 and faph=2 so every candidate integrates over
-    # the same interval.
-    xs = np.concatenate(([0.0], x, [2.0]))
+        return frr_at_target, 1.0
+    # Extend the curve to faph=0 and faph=max so every candidate integrates
+    # over the same interval.
+    xs = np.concatenate(([0.0], x, [max_faph]))
     ys = np.concatenate(([y[0]], y, [y[-1]]))
-    mean_frr = float(np.trapezoid(ys, xs) / 2.0)
-    return frr_at_1, mean_frr
+    mean_frr = float(np.trapezoid(ys, xs) / max_faph)
+    return frr_at_target, mean_frr
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--candidates", type=int, default=10)
-    ap.add_argument("--select", choices=["avr", "uniform"], default="avr",
+    ap.add_argument("--select", choices=["avr", "uniform", "all"], default="avr",
                     help="'avr' takes the top-N by validation score; 'uniform' "
                          "spreads candidates across the whole run, which is "
-                         "safer because the validation score is a weak proxy")
+                         "safer because the validation score is a weak proxy; "
+                         "'all' sweeps every saved checkpoint and needs no log")
+    ap.add_argument("--train-dir", type=Path, default=pipeline_config.TRAIN_DIR,
+                    help="sweep the checkpoints of another (archived) run")
+    ap.add_argument("--min-step", type=int, default=0)
     ap.add_argument("--positives", type=int, default=2000,
                     help="validation positives sampled per candidate")
     ap.add_argument("--workers", type=int, default=max(1, (mp.cpu_count() or 4) - 2))
@@ -189,15 +209,24 @@ def main():
                     help="overwrite best_weights.weights.h5 with the winner")
     args = ap.parse_args()
 
-    train_dir = pipeline_config.TRAIN_DIR
+    train_dir = args.train_dir
     cfg = yaml.load((train_dir / "training_config.yaml").read_text(), yaml.Loader)
 
-    records = parse_training_log(args.log)
-    if not records:
-        raise SystemExit(f"no validation records in {args.log}")
-    available = [r for r in records
-                 if (train_dir / "train" / f"0_weights_{r['step']}.weights.h5").exists()]
-    if args.select == "avr":
+    if args.select == "all":
+        steps = sorted(int(p.name.split("_")[2].split(".")[0])
+                       for p in (train_dir / "train").glob("0_weights_*.weights.h5"))
+        available = [{"step": s, "avr": float("nan")} for s in steps
+                     if s >= args.min_step]
+        chosen = available
+    else:
+        records = parse_training_log(args.log)
+        if not records:
+            raise SystemExit(f"no validation records in {args.log}")
+        available = [r for r in records if r["step"] >= args.min_step and
+                     (train_dir / "train" / f"0_weights_{r['step']}.weights.h5").exists()]
+    if args.select == "all":
+        pass
+    elif args.select == "avr":
         chosen = sorted(available, key=lambda r: -r["avr"])[:args.candidates]
     else:
         idx = np.linspace(0, len(available) - 1, min(args.candidates, len(available)))
@@ -215,8 +244,19 @@ def main():
     import microwakeword.data as input_data
     data_processor = input_data.FeatureHandler(cfg)
 
-    amb_jobs = ambient_jobs([pipeline_config.NEGATIVE_DIR / "dinner_party_eval"
-                             / "validation_ambient"])
+    # Dinner-party speech (CHiME-6) *and* a held-out AudioSet slice: the first
+    # has almost no music or TV, which is exactly what a wake word model in a
+    # living room false-triggers on.
+    amb_sets = {
+        "chime": ambient_jobs([pipeline_config.NEGATIVE_DIR / "dinner_party_eval"
+                               / "validation_ambient"]),
+        "audioset": ambient_jobs([pipeline_config.FEATURES_AMBIENT_VAL
+                                  / "validation_ambient"]),
+    }
+    if not amb_sets["audioset"]:
+        raise SystemExit("no AudioSet validation audio -- run step1 and "
+                         "step3 --only ambient first")
+    amb_jobs = [dict(j, set=name) for name, jobs in amb_sets.items() for j in jobs]
     pos_jobs = positive_jobs([pipeline_config.FEATURES_POSITIVE / "validation"],
                              args.positives)
     # Real recorded voices, scored separately and weighted equally with the
@@ -226,36 +266,44 @@ def main():
     print(f"selection data: {len(amb_jobs)} ambient chunks, {len(pos_jobs)} positives, "
           f"{len(rec_jobs)} recorded positives\n")
 
-    results = []
+    results, curves = [], {}
     for step, avr, ckpt in candidates:
         with tempfile.TemporaryDirectory(prefix="ckpt-") as tmp:
             tflite = convert_checkpoint(cfg, ckpt, Path(tmp), data_processor)
-            faph, frr, hours, rec_frr = evaluate(tflite, amb_jobs, pos_jobs,
-                                                 args.workers, rec_jobs)
-        frr_at_1, mean_frr = summarise(faph, frr)
-        entry = {"step": step, "avr": avr, "frr_at_1faph": frr_at_1,
-                 "mean_frr_0_2faph": mean_frr}
+            faph, frr, hours, rec_frr, by_set = evaluate(
+                tflite, amb_jobs, pos_jobs, args.workers, rec_jobs)
+        frr_at_target, mean_frr = summarise(faph, frr)
+        entry = {"step": step, "avr": avr, "hours": hours,
+                 "frr_at_target": frr_at_target, "mean_frr": mean_frr,
+                 "score": mean_frr}
+        curves[f"faph_{step}"] = faph
+        curves[f"frr_{step}"] = frr
+        for name, (f, h) in by_set.items():
+            curves[f"faph_{name}_{step}"] = f
+            entry[f"hours_{name}"] = h
         extra = ""
         if rec_frr is not None:
-            rec_at_1, rec_mean = summarise(faph, rec_frr)
-            entry.update({"synthetic_mean_frr_0_2faph": mean_frr,
-                          "recorded_frr_at_1faph": rec_at_1,
-                          "recorded_mean_frr_0_2faph": rec_mean,
-                          "mean_frr_0_2faph": (mean_frr + rec_mean) / 2})
-            extra = f"  recorded {100 * rec_mean:6.2f}%"
+            rec_at_target, rec_mean = summarise(faph, rec_frr)
+            curves[f"rec_frr_{step}"] = rec_frr
+            entry.update({"recorded_frr_at_target": rec_at_target,
+                          "recorded_mean_frr": rec_mean,
+                          "score": (mean_frr + rec_mean) / 2})
+            extra = (f"  recorded {100 * rec_at_target:6.2f}% / "
+                     f"{100 * rec_mean:6.2f}%")
         results.append(entry)
-        print(f"  step {step:6d}  val_avr {avr:.4f}  "
-              f"streaming FRR@1/h {100 * frr_at_1:6.2f}%  "
-              f"mean FRR 0-2/h {100 * mean_frr:6.2f}%{extra}", flush=True)
+        print(f"  step {step:6d}  val_avr {avr:.4f}  synthetic FRR@target / mean 0-"
+              f"{MAX_FAPH:g}/h {100 * frr_at_target:6.2f}% / {100 * mean_frr:6.2f}%"
+              f"{extra}  score {100 * entry['score']:6.2f}%", flush=True)
 
-    results.sort(key=lambda r: r["mean_frr_0_2faph"])
+    results.sort(key=lambda r: r["score"])
     best = results[0]
     print(f"\nBest streaming checkpoint: step {best['step']} "
-          f"(FRR@1/h {100 * best['frr_at_1faph']:.2f}%, "
-          f"mean FRR {100 * best['mean_frr_0_2faph']:.2f}%)")
+          f"(score {100 * best['score']:.2f}%, synthetic FRR at "
+          f"{pipeline_config.TARGET_FAPH:g}/h {100 * best['frr_at_target']:.2f}%)")
     out = pipeline_config.REPORT_DIR / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=1))
+    np.savez(out.with_suffix(".npz"), cutoffs=CUTOFFS, **curves)
     print(f"wrote {out}")
 
     if args.apply:

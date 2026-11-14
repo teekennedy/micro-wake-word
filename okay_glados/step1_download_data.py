@@ -4,6 +4,7 @@
   * MIT room impulse responses            -> reverberation augmentation
   * AudioSet balanced-train slices        -> background-noise augmentation
   * AudioSet eval slice                   -> EXTRA held-out ambient test audio
+  * a second AudioSet eval slice          -> ambient audio for checkpoint selection
   * Free Music Archive (xs)               -> background-music augmentation
   * kahrendt/microwakeword negative sets  -> pre-computed negative spectrograms
 
@@ -34,6 +35,8 @@ HF = "https://huggingface.co/datasets"
 # AudioSet is distributed as ~650 MB parquet shards of flac audio.
 AUDIOSET_BACKGROUND_SHARDS = [f"data/bal_train/{i:02d}.parquet" for i in range(3)]
 AUDIOSET_AMBIENT_SHARDS = [f"data/eval/{i:02d}.parquet" for i in range(8)]
+# Disjoint from the test slice above; used only to pick checkpoints.
+AUDIOSET_AMBIENT_VAL_SHARDS = [f"data/eval/{i:02d}.parquet" for i in range(8, 16)]
 
 NEGATIVE_ZIPS = [
     "dinner_party.zip",       # CHiME-6 train (40 h x 2 array channels)
@@ -203,6 +206,7 @@ def main():
     fetch_fma()
     fetch_audioset(AUDIOSET_BACKGROUND_SHARDS, config.BACKGROUND_AUDIOSET_DIR, "backgrounds")
     fetch_audioset(AUDIOSET_AMBIENT_SHARDS, config.AMBIENT_EXTRA_DIR, "held-out ambient")
+    fetch_audioset(AUDIOSET_AMBIENT_VAL_SHARDS, config.AMBIENT_VAL_DIR, "validation ambient")
 
     print("\nStep 1 complete.")
     for d in [
@@ -211,6 +215,7 @@ def main():
         config.BACKGROUND_FMA_DIR,
         config.BACKGROUND_AUDIOSET_DIR,
         config.AMBIENT_EXTRA_DIR,
+        config.AMBIENT_VAL_DIR,
     ]:
         size = sum(f.stat().st_size for f in d.glob("**/*") if f.is_file())
         print(f"  {d.name:24s} {size / 1e9:8.2f} GB")
