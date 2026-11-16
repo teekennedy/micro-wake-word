@@ -15,6 +15,8 @@ setuptools.setup(
         "pymicro-features",
         "pyyaml",
         "tensorflow>=2.18",
+        # tf.summary needs it; TensorFlow stopped depending on it in 2.20.
+        "tensorboard",
         "webrtcvad-wheels",
         "ai-edge-litert",
     ],
