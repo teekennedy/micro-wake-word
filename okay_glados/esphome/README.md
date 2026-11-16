@@ -113,7 +113,7 @@ These are the `audio_capture:` options, set in `audio-capture.yaml`:
 | `buffer_duration` | `12s` | 1–60 s. Costs about 64 KB of PSRAM per second (two copies). |
 | `microphone` | required | Keep `channels` and `gain_factor` equal to the `micro_wake_word` microphone in the Voice PE package, or the clips will not match what the model hears. |
 | `ambient_samples.per_day` | `8` | Hard cap. The day is cut into this many equal slots, counted from boot, with one randomly timed sample each. Remove the `ambient_samples` block to turn sampling off. |
-| `ambient_samples.min_level` | `-50` | dBFS. A 100 ms frame counts as sound above this. **Not calibrated against a real device**: raise it if quiet rooms get sampled, lower it if nothing ever is. |
+| `ambient_samples.min_level` | `-78` | dBFS. A 100 ms frame counts as sound above this. Measured on a Voice PE at `gain_factor: 4` (6 clips): a quiet room sits near -84 with at most ~11% of frames above -78, background TV has a median near -77 with over 50% of frames above -78, and a spoken wake word peaks around -47 to -53. Scale it with `gain_factor` (x4 = +12 dB). Raise it if quiet rooms get sampled, lower it if nothing ever is. |
 | `ambient_samples.min_active` | `30%` | Share of the buffer that must be sound. |
 | `on_uploaded`, `on_error` | none | Automations run after an upload succeeds or fails. |
 

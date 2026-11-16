@@ -83,13 +83,14 @@ class AudioCapture : public Component {
   // Ambient sampling: the day is cut into `per_day` equal slots, and each slot
   // gets one randomly timed chance to upload a buffer that has sound in it.
   uint8_t ambient_per_day_{0};
-  float ambient_min_level_db_{-50.0f};
+  float ambient_min_level_db_{-78.0f};
   float ambient_min_active_{0.3f};
   std::string ambient_label_;
   uint32_t slot_start_ms_{0};
   uint32_t slot_offset_ms_{0};
   bool slot_done_{true};
   uint32_t last_ambient_check_ms_{0};
+  uint32_t last_skip_log_ms_{0};
   uint32_t last_event_ms_{0};  // last detection/button upload or re-tag
   bool had_event_{false};
 

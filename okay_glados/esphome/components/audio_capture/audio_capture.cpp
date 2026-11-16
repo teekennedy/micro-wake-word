@@ -144,7 +144,12 @@ void AudioCapture::check_ambient_() {
   }
   const float active = this->active_fraction_();
   if (active < this->ambient_min_active_) {
-    ESP_LOGV(TAG, "Ambient sample due, but only %.0f%% of the buffer has sound", active * 100.0f);
+    // Checked every 2 s while a sample is due; log at most once a minute.
+    if (now - this->last_skip_log_ms_ >= 60000) {
+      this->last_skip_log_ms_ = now;
+      ESP_LOGD(TAG, "Ambient sample due, but only %.0f%% of the buffer has sound (needs %.0f%%)", active * 100.0f,
+               this->ambient_min_active_ * 100.0f);
+    }
     return;
   }
   ESP_LOGD(TAG, "Ambient sample: %.0f%% of the buffer has sound", active * 100.0f);

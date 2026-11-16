@@ -53,7 +53,7 @@ CONFIG_SCHEMA = cv.Schema(
                 cv.Optional(CONF_PER_DAY, default=8): cv.int_range(min=1, max=96),
                 cv.Optional(CONF_LABEL, default="true_reject"): cv.string,
                 # A 100 ms frame counts as "sound" above this level (dBFS RMS)...
-                cv.Optional(CONF_MIN_LEVEL, default=-50.0): cv.float_range(min=-90.0, max=0.0),
+                cv.Optional(CONF_MIN_LEVEL, default=-78.0): cv.float_range(min=-90.0, max=0.0),
                 # ...and this much of the buffer must be sound.
                 cv.Optional(CONF_MIN_ACTIVE, default="30%"): cv.percentage,
             }

@@ -57,7 +57,7 @@ audio_capture:
   ambient_samples:
     per_day: 8
     label: true_reject
-    min_level: -50       # dBFS; raise it if quiet rooms get sampled
+    min_level: -78       # dBFS; measured on a Voice PE: quiet room ~-84, background TV ~-77
     min_active: 30%
 
 micro_wake_word:
