@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace esphome {
 namespace audio_capture {
@@ -18,6 +19,18 @@ namespace audio_capture {
 static const char *const TAG = "audio_capture";
 static const size_t WAV_HEADER_SIZE = 44;
 static const size_t UPLOAD_CHUNK = 4096;
+
+// Raw bytes of a microphone chunk, whichever type this ESPHome version passes.
+static inline void capture_bytes(const std::vector<uint8_t> &chunk, const uint8_t *&data, size_t &len) {
+  data = chunk.data();
+  len = chunk.size();
+}
+template<typename C>
+static inline auto capture_bytes(const C &chunk, const uint8_t *&data, size_t &len)
+    -> decltype((void) chunk.data.data(), void()) {
+  data = chunk.data.data();
+  len = chunk.data.size();
+}
 
 void AudioCapture::setup() {
   this->sample_rate_ = this->microphone_source_->get_audio_stream_info().get_sample_rate();
@@ -47,12 +60,15 @@ void AudioCapture::setup() {
 
   // Runs on the microphone task. Never block it: if upload() holds the lock
   // while it copies the buffer out, this chunk (tens of ms) is dropped.
-  this->microphone_source_->add_data_callback([this](const microphone::AudioCapture &capture) {
+  // Generic so it builds on both ESPHome APIs: releases up to 2026.10 pass a
+  // std::vector<uint8_t>, dev passes a microphone::AudioCapture.
+  this->microphone_source_->add_data_callback([this](const auto &chunk) {
     if (xSemaphoreTake(this->lock_, 0) != pdTRUE) {
       return;
     }
-    const uint8_t *data = capture.data.data();
-    size_t len = capture.data.size();
+    const uint8_t *data;
+    size_t len;
+    capture_bytes(chunk, data, len);
     if (len > this->ring_size_) {
       data += len - this->ring_size_;
       len = this->ring_size_;
