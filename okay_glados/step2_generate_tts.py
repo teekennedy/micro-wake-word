@@ -56,7 +56,13 @@ def write_phrase_file(path: Path, weighted_phrases, n_lines=97, seed=1234):
 
 
 def generate(phrase_file: Path, out_dir: Path, count: int, min_speaker: int,
-             max_speaker: int, min_phoneme_count=None, batch_size=250):
+             max_speaker: int, min_phoneme_count=None, batch_size=None):
+    # Piper synthesises a whole batch at once, so peak memory scales with batch
+    # size times the longest clip.  Carrier utterances are padded to
+    # min_phoneme_count and are several times longer than the bare wake word:
+    # 250 of them peaked above 16 GiB.
+    if batch_size is None:
+        batch_size = 50 if min_phoneme_count else 250
     if out_dir.exists() and len(list(out_dir.glob("*.wav"))) >= count:
         print(f"  have {count} samples in {out_dir}")
         return
