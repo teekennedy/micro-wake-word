@@ -17,6 +17,9 @@
 import os
 import platform
 import contextlib
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from absl import logging
 
@@ -246,44 +249,59 @@ def train(model, config, data_processor):
     best_maximization_quantity = 0.0
     best_no_faph_cutoff = 1.0
 
-    for training_step in range(1, training_steps_max + 1):
+    def stage_index(training_step):
         training_steps_sum = 0
         for i in range(len(training_steps_list)):
             training_steps_sum += training_steps_list[i]
             if training_step <= training_steps_sum:
-                learning_rate = learning_rates_list[i]
-                mix_up_prob = mix_up_prob_list[i]
-                freq_mix_prob = freq_mix_prob_list[i]
-                time_mask_max_size = time_mask_max_size_list[i]
-                time_mask_count = time_mask_count_list[i]
-                freq_mask_max_size = freq_mask_max_size_list[i]
-                freq_mask_count = freq_mask_count_list[i]
-                positive_class_weight = positive_class_weight_list[i]
-                negative_class_weight = negative_class_weight_list[i]
-                break
+                return i
+        return len(training_steps_list) - 1
+
+    def augmentation_policy_for(training_step):
+        i = stage_index(training_step)
+        return {
+            "mix_up_prob": mix_up_prob_list[i],
+            "freq_mix_prob": freq_mix_prob_list[i],
+            "time_mask_max_size": time_mask_max_size_list[i],
+            "time_mask_count": time_mask_count_list[i],
+            "freq_mask_max_size": freq_mask_max_size_list[i],
+            "freq_mask_count": freq_mask_count_list[i],
+        }
+
+    # The next batch is read while the current one trains.
+    prefetcher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
+
+    def fetch_batch(training_step):
+        return prefetcher.submit(
+            data_processor.get_data,
+            "training",
+            batch_size=config["batch_size"],
+            features_length=config["spectrogram_length"],
+            truncation_strategy="default",
+            augmentation_policy=augmentation_policy_for(training_step),
+        )
+
+    # Without a terminal the \r progress line never reaches a log; report
+    # throughput on its own line instead.
+    progress_interval = 0 if sys.stdout.isatty() else 100
+    progress_since = time.monotonic()
+
+    next_batch = fetch_batch(1)
+    for training_step in range(1, training_steps_max + 1):
+        i = stage_index(training_step)
+        learning_rate = learning_rates_list[i]
+        positive_class_weight = positive_class_weight_list[i]
+        negative_class_weight = negative_class_weight_list[i]
 
         model.optimizer.learning_rate.assign(learning_rate)
-
-        augmentation_policy = {
-            "mix_up_prob": mix_up_prob,
-            "freq_mix_prob": freq_mix_prob,
-            "time_mask_max_size": time_mask_max_size,
-            "time_mask_count": time_mask_count,
-            "freq_mask_max_size": freq_mask_max_size,
-            "freq_mask_count": freq_mask_count,
-        }
 
         (
             train_fingerprints,
             train_ground_truth,
             train_sample_weights,
-        ) = data_processor.get_data(
-            "training",
-            batch_size=config["batch_size"],
-            features_length=config["spectrogram_length"],
-            truncation_strategy="default",
-            augmentation_policy=augmentation_policy,
-        )
+        ) = next_batch.result()
+        if training_step < training_steps_max:
+            next_batch = fetch_batch(training_step + 1)
 
         train_ground_truth = train_ground_truth.reshape(-1, 1)
 
@@ -310,6 +328,22 @@ def train(model, config, data_processor):
             ),
             end="\r",
         )
+
+        if progress_interval and training_step % progress_interval == 0:
+            now = time.monotonic()
+            rate = progress_interval / (now - progress_since)
+            progress_since = now
+            remaining = (training_steps_max - training_step) / rate
+            logging.info(
+                "Training progress: step %d/%d, %.2f steps/s, loss %.4f, about %s left",
+                training_step,
+                training_steps_max,
+                rate,
+                result[9],
+                time.strftime("%H:%M:%S", time.gmtime(remaining))
+                if remaining < 86400
+                else f"{remaining / 3600:.0f}h",
+            )
 
         is_last_step = training_step == training_steps_max
         if (training_step % config["eval_step_interval"]) == 0 or is_last_step:

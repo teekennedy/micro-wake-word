@@ -17,12 +17,53 @@
 
 import os
 import random
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 from absl import logging
 from pathlib import Path
 from mmap_ninja.ragged import RaggedMmap
+
+# Threads that read one training batch's samples in parallel.
+READ_THREADS = int(os.environ.get("MWW_READ_THREADS", "16"))
+
+
+class RaggedSampleReader(object):
+    """Reads single samples of a RaggedMmap with one pread each.
+
+    Training draws samples at random from tens of GB of features. Through the
+    mmap every cold sample is a page fault that triggers the block device's
+    readahead (8 MB on a Longhorn volume, ~200x a 40 KB sample), and the
+    faults run one after another. pread fetches just the sample and releases
+    the GIL, so a batch can be read in parallel.
+
+    Args:
+        ragged (RaggedMmap): The opened feature set.
+    """
+
+    def __init__(self, ragged: RaggedMmap):
+        memmap = ragged.memmap
+        self.fd = os.open(memmap.filename, os.O_RDONLY)
+        self.dtype = memmap.dtype
+        self.offset = memmap.offset
+        self.starts = ragged.starts
+        self.ends = ragged.ends
+        self.shapes = ragged.shapes
+
+    def __getitem__(self, index: int) -> np.ndarray:
+        start, end = int(self.starts[index]), int(self.ends[index])
+        sample = np.empty(tuple(self.shapes[index]), dtype=self.dtype)
+        if sample.size != end - start:
+            raise ValueError(f"sample {index}: shape does not match its extent")
+        view = memoryview(sample.reshape(-1).view(np.uint8))
+        position = self.offset + start * self.dtype.itemsize
+        while view:
+            read = os.preadv(self.fd, [view], position)
+            if read == 0:
+                raise EOFError(f"sample {index}: short read at byte {position}")
+            view, position = view[read:], position + read
+        return sample
 
 from microwakeword.audio.clips import Clips
 from microwakeword.audio.augmentation import Augmentation
@@ -167,6 +208,8 @@ class MmapFeatureGenerator(object):
         self.feature_sets["testing_ambient"] = []
 
         self.loaded_features = []
+        # Random training reads go through these instead of the mmaps.
+        self.sample_readers = []
 
         dirs = [
             "testing",
@@ -190,6 +233,7 @@ class MmapFeatureGenerator(object):
                 imported_features = RaggedMmap(mmap_path)
 
                 self.loaded_features.append(imported_features)
+                self.sample_readers.append(RaggedSampleReader(imported_features))
                 feature_index = len(self.loaded_features) - 1
 
                 for i in range(0, len(imported_features)):
@@ -253,7 +297,7 @@ class MmapFeatureGenerator(object):
             right_cutoff = random.choice(self.fixed_right_cutoffs)
 
         feature = random.choice(self.feature_sets[mode])
-        spectrogram = self.loaded_features[feature["loaded_feature_index"]][
+        spectrogram = self.sample_readers[feature["loaded_feature_index"]][
             feature["subindex"]
         ]
 
@@ -414,6 +458,9 @@ class FeatureHandler(object):
         config: dict,
     ):
         self.feature_providers = []
+        self.read_pool = ThreadPoolExecutor(
+            max_workers=READ_THREADS, thread_name_prefix="feature-read"
+        )
 
         logging.info("Loading and analyzing data sets.")
 
@@ -552,11 +599,11 @@ class FeatureHandler(object):
                 k=sample_count,
             )
 
-            for provider in random_feature_providers:
+            def sample(provider):
                 spectrogram = provider.get_random_spectrogram(
                     "training", features_length, truncation_strategy
                 )
-                spectrogram = spec_augment(
+                return spec_augment(
                     spectrogram,
                     augmentation_policy["time_mask_max_size"],
                     augmentation_policy["time_mask_count"],
@@ -564,7 +611,16 @@ class FeatureHandler(object):
                     augmentation_policy["freq_mask_count"],
                 )
 
-                data.append(spectrogram)
+            # Mmap features are read in parallel; clips generators may not be
+            # thread safe, so a mix with them is read serially.
+            if all(
+                isinstance(p, MmapFeatureGenerator) for p in random_feature_providers
+            ):
+                data = list(self.read_pool.map(sample, random_feature_providers))
+            else:
+                data = [sample(p) for p in random_feature_providers]
+
+            for provider in random_feature_providers:
                 labels.append(float(provider.label))
                 weights.append(float(provider.penalty_weight))
         else:
